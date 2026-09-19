@@ -110,7 +110,18 @@ export class TrainExecution implements Execution {
       throw new Error("Not initialized");
     }
 
-    if (!this.train.isActive() || !this.activeSourceOrDestination()) {
+    if (!this.train.isActive()) {
+      this.deleteTrain();
+      return;
+    }
+
+    // A station added to the railroad currently under the train replaces that
+    // railroad with two (or more) segments. Rebase the train onto the segment
+    // containing its engine before moving so stations still ahead are visited,
+    // while stations already passed are not paid retroactively.
+    this.reconcileCurrentRailroadSplit();
+
+    if (!this.activeSourceOrDestination()) {
       this.deleteTrain();
       return;
     }
@@ -259,6 +270,89 @@ export class TrainExecution implements Execution {
     }
     this.stations.splice(0, 2, ...path);
     return getOrientedRailroad(this.stations[0], this.stations[1]);
+  }
+
+  /**
+   * Rebase a train when its current railroad was split by newly-added stations.
+   *
+   * Rail splitting preserves the original tile sequence. That lets us compare
+   * the replacement segments with the recorded motion plan, then use
+   * currentTile to select the replacement segment containing the engine. A
+   * station exactly at currentTile remains the next station so the normal
+   * boundary-crossing logic awards it once; stations behind currentTile are
+   * discarded without a stop.
+   */
+  private reconcileCurrentRailroadSplit(): void {
+    if (this.currentRailroad === null || this.stations.length < 2) return;
+
+    const [station0, station1] = this.stations;
+    if (getOrientedRailroad(station0, station1) !== null) return;
+
+    const path = this.railNetwork.findStationsPath(station0, station1);
+    if (!path || path.length <= 2) return;
+
+    const segments: OrientedRailroad[] = [];
+    let cursor = this.pathIndex;
+    for (let i = 0; i < path.length - 1; i++) {
+      const segment = getOrientedRailroad(path[i], path[i + 1]);
+      if (!segment) return;
+      segments.push(segment);
+      for (const tile of segment.getTiles()) {
+        if (this.pathTiles[cursor++] !== tile) return;
+      }
+    }
+
+    // Only adopt a true split of the current railroad. A detour may share a
+    // prefix with the old route, but must not change the train's motion plan.
+    const oldLength = this.currentRailroad.getTiles().length;
+    if (cursor !== this.pathIndex + oldLength) return;
+
+    const oldTiles = this.currentRailroad.getTiles();
+    let activeSegment = 0;
+    let segmentStart = 0;
+    let boundary = 0;
+    for (let i = 0; i < segments.length - 1; i++) {
+      boundary += segments[i].getTiles().length;
+      const stopIndex = this.stopIndexAtBoundary(
+        path[i + 1],
+        oldTiles,
+        boundary,
+      );
+      if (this.currentTile <= stopIndex) break;
+      activeSegment = i + 1;
+      segmentStart = boundary;
+    }
+
+    this.pathIndex += segmentStart;
+    this.currentTile -= segmentStart;
+    this.currentRailroad = segments[activeSegment];
+    this.stations.splice(0, 2, ...path.slice(activeSegment));
+  }
+
+  /**
+   * A split assigns the closest rail tile to one of the two new segments. The
+   * assignment depends on railroad orientation, so the station can lie at
+   * either side of the segment-array boundary. Pick the adjacent tile closest
+   * to the station to decide whether the engine has physically passed it.
+   */
+  private stopIndexAtBoundary(
+    station: TrainStation,
+    tiles: readonly TileRef[],
+    boundary: number,
+  ): number {
+    if (this.mg === null) throw new Error("Not initialized");
+
+    const before = boundary - 1;
+    const after = boundary;
+    const stationX = this.mg.x(station.tile());
+    const stationY = this.mg.y(station.tile());
+    const distanceSquared = (index: number) => {
+      const dx = this.mg!.x(tiles[index]) - stationX;
+      const dy = this.mg!.y(tiles[index]) - stationY;
+      return dx * dx + dy * dy;
+    };
+
+    return distanceSquared(before) <= distanceSquared(after) ? before : after;
   }
 
   private canTradeWithDestination() {
