@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "OpenFront Troop Growth Preview",
+  "version": "1.0.0",
+  "description": "Shows your current troop growth and the rate after sending the selected attack percentage.",
+  "minimum_chrome_version": "111",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://openfront.io/*",
+        "https://*.openfront.io/*",
+        "https://openfront.dev/*",
+        "https://*.openfront.dev/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": ["troop-growth-preview/content.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    }
+  ]
+}
